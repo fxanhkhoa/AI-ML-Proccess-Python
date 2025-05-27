@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC with Data Channel</title>
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>Welcome to WebRTC with Data Channel</h1>
+    <div id="controls">
+        <button id="startButton">Start Call</button>
+        <button id="hangupButton" disabled>Hang Up</button>
+    </div>
+    
+    <div id="videos">
+        <video id="localVideo" autoplay muted playsinline></video>
+        <video id="remoteVideo" autoplay playsinline controls></video>
+    </div>
+    
+    <div id="dataChannelTest">
+        <input id="dataChannelInput" placeholder="Message to send" disabled>
+        <button id="sendButton" disabled>Send</button>
+        <div id="receivedMessages"></div>
+    </div>
+
+    <script src="./webrtc_old.js"></script>
+</body>
+</body>
+</html>
