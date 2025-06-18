@@ -1,13 +1,15 @@
 import base64
 import cv2
 import numpy as np
+from socketio import AsyncServer
 from src.image_storage import get_image
+from src.type.engine import EngineUpdate
 
 # Global variables to track window state
 window_created = False
 last_image = None
 
-def process_start():
+async def process_start(sio: AsyncServer, client_id: str):
     global window_created, last_image
     
     # Get the latest base64 image
@@ -20,6 +22,7 @@ def process_start():
         return
     
     # Process the base64 string
+
     if "base64," in base64_string:
         base64_string = base64_string.split("base64,")[1]
 

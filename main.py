@@ -5,11 +5,13 @@ import base64
 import os
 from src.image_storage import set_image
 from src.process import process_start
+from src.type.engine import EngineUpdate
 
 # Create a Socket.IO server
 sio = socketio.AsyncServer(cors_allowed_origins='*')
 app = web.Application()
 sio.attach(app)
+client_id = ''
 
 async def index(request):
     try:
@@ -18,11 +20,6 @@ async def index(request):
     except FileNotFoundError:
         return web.Response(text="<html><body><h1>Welcome to WebRTC Server</h1></body></html>", 
                            content_type='text/html')
-
-# Event handler for new connections
-@sio.event
-async def connect(sid, environ):
-    print(f"Client connected: {sid}")
 
 # Event handler for disconnections
 @sio.event
@@ -58,14 +55,17 @@ if __name__ == '__main__':
 
     @sio.on('connect')
     async def handle_connect(sid, environ):
+        global client_id
         # Start a background task to process images
+        client_id = sid
         sio.start_background_task(process_images)
 
     async def process_images():
+        global client_id
         while True:
-            process_start()
+            await process_start(sio, client_id)
             # Add a small delay to prevent CPU overuse
-            await sio.sleep(0.1)
+            await sio.sleep(2)
 
     print(f'Server running on http://localhost:{port}')
     web.run_app(app, port=port)
