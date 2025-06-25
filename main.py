@@ -57,6 +57,7 @@ if __name__ == '__main__':
     async def handle_connect(sid, environ):
         global client_id
         # Start a background task to process images
+        print(sid)
         client_id = sid
         sio.start_background_task(process_images)
 
@@ -65,7 +66,7 @@ if __name__ == '__main__':
         while True:
             await process_start(sio, client_id)
             # Add a small delay to prevent CPU overuse
-            await sio.sleep(2)
+            await sio.sleep(0.1)
 
     print(f'Server running on http://localhost:{port}')
     web.run_app(app, port=port)

@@ -4,13 +4,18 @@ import numpy as np
 from socketio import AsyncServer
 from src.image_storage import get_image
 from src.type.engine import EngineUpdate
+import math
 
 # Global variables to track window state
 window_created = False
 last_image = None
+engine = EngineUpdate(acceleration=0.0, steerAngle=0, brake=0.0)
+print_output = False
 
 async def process_start(sio: AsyncServer, client_id: str):
     global window_created, last_image
+
+    await engine.emit_to_simulation(sio, client_id)
     
     # Get the latest base64 image
     base64_string = get_image()
@@ -34,21 +39,139 @@ async def process_start(sio: AsyncServer, client_id: str):
         nparr = np.frombuffer(img_data, np.uint8)
 
         # Decode the image
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        if img is None:
+        if image is None:
             return
             
         # Store the current image
-        last_image = img.copy()
+        last_image = image.copy()
         
         # Create window if it doesn't exist
         if not window_created:
             cv2.namedWindow('Video Stream', cv2.WINDOW_NORMAL)
             window_created = True
-        
+
+        # ------------------------------- MAIN PROCESSING -------------------------------------
+        # Calculate the height of the image
+        height, width = image.shape[:2]
+        # Crop to the bottom third
+        cropped_image = image[2 * height // 3:height, 0:width]
+        # Convert to grayscale
+        gray_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
+        # Apply Gaussian blur
+        blur_gray = cv2.GaussianBlur(gray_image, (5, 5), 0)
+        # Apply thresholding (simple binary thresholding)
+        # Adjust the threshold value (e.g., 100) and max_value (e.g., 255) as needed
+        ret, thresh_image = cv2.threshold(blur_gray, 150, 255, cv2.THRESH_BINARY)
+        thresh_image = cv2.bitwise_not(thresh_image)
+
+        contours, hierarchy = cv2.findContours(thresh_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Find the two largest contours (assuming these are the lane lines)
+        # Sort contours by area in descending order
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        # Take the top two contours if they exist
+        lane_line_contours = contours[:2]
+
+        # Create a copy of the original cropped image to draw on
+        contour_image = cropped_image.copy()
+
+        # Canny edge detection on the thresholded image
+        canny_image = cv2.Canny(thresh_image, 50, 150)
+
+        # Draw the Canny edges
+        canny_output_image = np.zeros_like(cropped_image)
+        canny_output_image[..., 0] = canny_image # Draw Canny on one channel for display
+
+        # Log and draw all contours
+        if print_output:
+            print(f"Found {len(contours)} contours.")
+        # Draw all contours for visualization (optional)
+        all_contours_image = cropped_image.copy()
+        cv2.drawContours(all_contours_image, contours, -1, (0, 255, 0), 2) # Draw all contours in green
+
+        # The lane line is the max contour
+        lane_line_contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        max_contour = contours[0]
+        if print_output:
+            print(f"Largest contour has area: {cv2.contourArea(max_contour)}")
+
+        # You can then draw just this largest contour if needed
+        max_contour_image = cropped_image.copy()
+        cv2.drawContours(max_contour_image, [max_contour], -1, (255, 0, 0), 2) # Draw in blue
+
+        M = cv2.moments(max_contour)
+        # Ensure M['m00'] is not zero to avoid division by zero
+        if M['m00'] != 0:
+            # Calculate the centroid (center of mass)
+            cX = int(M['m10'] / M['m00'])
+            cY = int(M['m01'] / M['m00'])
+
+            # Draw a circle at the center
+            cv2.circle(max_contour_image, (cX, cY), 5, (0, 255, 255), -1) # Draw center
+            # Define the text to display
+            center_text = f"({cX}, {cY})"
+
+            # Draw the text next to the center
+            # The last argument is the text color (BGR: Blue, Green, Red)
+            # The font scale and thickness can be adjusted for better visibility
+            cv2.putText(max_contour_image, center_text, (cX + 10, cY - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            
+        # The bottom center point of the image
+        bottom_center_x = width // 2
+        bottom_center_y = cropped_image.shape[0] # The bottom edge is at the height of the cropped image
+
+        # Calculate the difference in x and y coordinates
+        delta_x = cX - bottom_center_x
+        delta_y = cY - bottom_center_y # Note: Y increases downwards in image coordinates
+
+        # Calculate the angle in radians using arctan2
+        # arctan2 handles all four quadrants correctly and avoids division by zero issues
+        # It calculates the angle between the positive x-axis and the point (x, y)
+        # In our case, the vector is from the bottom center (bottom_center_x, bottom_center_y)
+        # to the centroid (cX, cY).
+        # The angle is measured from the horizontal line passing through the bottom center.
+        # To get the angle from the vertical line (which represents straight ahead),
+        # we can use arctan2(x, y) which calculates the angle from the positive y-axis.
+        # The positive y-axis points downwards in image coordinates.
+        # We want the angle from the upward vertical, so we use -delta_y.
+        deviation_angle_rad = math.atan2(delta_x, -delta_y)
+
+        # Convert the angle from radians to degrees
+        deviation_angle_deg = math.degrees(deviation_angle_rad)
+
+        if print_output:
+            print(f"Centroid of the largest contour: ({cX}, {cY})")
+            print(f"Bottom center of the image: ({bottom_center_x}, {bottom_center_y})")
+            print(f"Deviation angle (radians): {deviation_angle_rad}")
+            print(f"Deviation angle (degrees): {deviation_angle_deg}")
+            print(f"need to set angle (degrees): {deviation_angle_deg / 2}")
+
+        engine.acceleration = 1
+        engine.steerAngle = deviation_angle_deg / 2
+        engine.brake = 0
+
+        await engine.emit_to_simulation(sio, client_id)
+
+        # Optional: Draw a line from the bottom center to the centroid on the max contour image
+        # Make sure max_contour_image is still available or recreate it if needed
+        line_image = max_contour_image.copy()
+        cv2.line(line_image, (bottom_center_x, bottom_center_y), (cX, cY), (255, 0, 255), 2) # Draw in magenta
+
+        # Add text for the deviation angle
+        angle_text = f"Angle: {deviation_angle_deg:.2f} deg"
+        # Position the text near the bottom center or the centroid
+        text_pos = (bottom_center_x + 20, bottom_center_y - 20) # Adjust position as needed
+        cv2.putText(line_image, angle_text, text_pos,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # ------------------------------- MAIN PROCESSING -------------------------------------
+
         # Display the image
-        cv2.imshow('Video Stream', img)
+        cv2.imshow('Video Stream', line_image)
         
         # Use a short wait time to make it feel like video
         # 1ms is enough to update the UI without blocking too long
@@ -59,8 +182,9 @@ async def process_start(sio: AsyncServer, client_id: str):
             cv2.destroyAllWindows()
             window_created = False
             
-    except Exception as e:
+    except Exception as e: 
         print(f"Error processing image: {e}")
+
 
 def cleanup():
     """Call this when shutting down the application"""
