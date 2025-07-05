@@ -30,11 +30,9 @@ class EngineUpdate:
         })
     
     async def emit_to_simulation(self, sio: AsyncServer, client_id: str):
-        current_time = time.time() - self.start_time
-        is_acceleration_on = int(current_time / self.acceleration_interval) % 2 == 0
-
+        
         current_state = {
-            'acceleration': self.acceleration if is_acceleration_on else 0.0,
+            'acceleration': self.acceleration,
             'steerAngle': self.steerAngle,
             'brake': self.brake
         }

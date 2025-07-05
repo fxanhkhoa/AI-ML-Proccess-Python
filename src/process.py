@@ -5,18 +5,46 @@ from socketio import AsyncServer
 from src.image_storage import get_image
 from src.type.engine import EngineUpdate
 import math
+import time
+from src.util.image import is_circular
 
 # Global variables to track window state
 window_created = False
-last_image = None
+window_track_bar_created = False
+window_sign_created = False
+
 engine = EngineUpdate(acceleration=0.0, steerAngle=0, brake=0.0)
 print_output = False
 
-async def process_start(sio: AsyncServer, client_id: str):
-    global window_created, last_image
+accel_state = 1  # 1 for accelerating, 0 for not
+accel_last_switch = time.time()
 
-    await engine.emit_to_simulation(sio, client_id)
-    
+threshold1 = 95  # Initial value for threshold1
+threshold2 = 50  # Initial value for threshold2
+threshold3 = 150  # Example third threshold
+
+async def process_start(sio: AsyncServer, client_id: str):
+    global window_created, last_image, accel_state, accel_last_switch
+    global threshold1, threshold2, threshold3, window_track_bar_created
+
+    # --- UI with sliders ---
+    if not window_track_bar_created:
+        cv2.namedWindow('track bar', cv2.WINDOW_NORMAL)
+        cv2.createTrackbar('Threshold 1', 'track bar', threshold1, 255, lambda v: None)
+        cv2.createTrackbar('Threshold 2', 'track bar', threshold2, 255, lambda v: None)
+        cv2.createTrackbar('Threshold 3', 'track bar', threshold3, 255, lambda v: None)
+        cv2.createTrackbar('Aperture', 'track bar', 7, 7, lambda v: None)
+        window_track_bar_created = True
+
+    # Get current slider values
+    threshold1 = cv2.getTrackbarPos('Threshold 1', 'track bar')
+    threshold2 = cv2.getTrackbarPos('Threshold 2', 'track bar')
+    threshold3 = cv2.getTrackbarPos('Threshold 3', 'track bar')
+    aperture = cv2.getTrackbarPos('Aperture', 'track bar')
+    if aperture % 2 == 0:  # Ensure aperture is odd and >=3
+        aperture = max(3, aperture + 1)
+
+
     # Get the latest base64 image
     base64_string = get_image()
     if not base64_string:
@@ -25,7 +53,6 @@ async def process_start(sio: AsyncServer, client_id: str):
             cv2.imshow('Video Stream', last_image)
             cv2.waitKey(1)  # Short wait to update the UI
         return
-    
     # Process the base64 string
 
     if "base64," in base64_string:
@@ -52,6 +79,7 @@ async def process_start(sio: AsyncServer, client_id: str):
             cv2.namedWindow('Video Stream', cv2.WINDOW_NORMAL)
             window_created = True
 
+
         # ------------------------------- MAIN PROCESSING -------------------------------------
         # Calculate the height of the image
         height, width = image.shape[:2]
@@ -71,19 +99,6 @@ async def process_start(sio: AsyncServer, client_id: str):
         # Find the two largest contours (assuming these are the lane lines)
         # Sort contours by area in descending order
         contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
-        # Take the top two contours if they exist
-        lane_line_contours = contours[:2]
-
-        # Create a copy of the original cropped image to draw on
-        contour_image = cropped_image.copy()
-
-        # Canny edge detection on the thresholded image
-        canny_image = cv2.Canny(thresh_image, 50, 150)
-
-        # Draw the Canny edges
-        canny_output_image = np.zeros_like(cropped_image)
-        canny_output_image[..., 0] = canny_image # Draw Canny on one channel for display
 
         # Log and draw all contours
         if print_output:
@@ -150,11 +165,14 @@ async def process_start(sio: AsyncServer, client_id: str):
             print(f"Deviation angle (degrees): {deviation_angle_deg}")
             print(f"need to set angle (degrees): {deviation_angle_deg / 2}")
 
-        engine.acceleration = 1
-        engine.steerAngle = deviation_angle_deg / 2
-        engine.brake = 0
-
-        await engine.emit_to_simulation(sio, client_id)
+        # --- Acceleration interval logic 3s acceleration = 1, 2s acceleration = 0 ---
+        now = time.time()
+        if accel_state == 1 and now - accel_last_switch >= 3:
+            accel_state = 0
+            accel_last_switch = now
+        elif accel_state == 0 and now - accel_last_switch >= 2:
+            accel_state = 1
+            accel_last_switch = now
 
         # Optional: Draw a line from the bottom center to the centroid on the max contour image
         # Make sure max_contour_image is still available or recreate it if needed
@@ -167,11 +185,60 @@ async def process_start(sio: AsyncServer, client_id: str):
         text_pos = (bottom_center_x + 20, bottom_center_y - 20) # Adjust position as needed
         cv2.putText(line_image, angle_text, text_pos,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        
 
+        
+        # --- Process Traffic Sign Detection ---
+        traffic_image = last_image.copy()
+        traffic_gray = cv2.cvtColor(traffic_image, cv2.COLOR_BGR2GRAY)
+        # Apply Gaussian blur
+        traffic_gray_blur = cv2.GaussianBlur(traffic_gray, (5, 5), 0)
+        # Apply thresholding (simple binary thresholding)
+        # Adjust the threshold value (e.g., 100) and max_value (e.g., 255) as needed
+        ret, thresh_image_traffic = cv2.threshold(traffic_gray_blur, threshold1, 255, cv2.THRESH_BINARY)
+
+        # Canny edge detection on the thresholded image
+        edges = cv2.Canny(thresh_image_traffic, threshold2, threshold3, apertureSize=aperture, L2gradient=True)
+        contours, _ = cv2.findContours(edges.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # # Iterate through the contours and check for squares
+        cicular_contours = []
+        for contour in contours:
+            if is_circular(contour):
+                cicular_contours.append(contour)
+
+        # # Draw the detected squares on the original image
+        cv2.drawContours(traffic_image, cicular_contours, -1, (0, 255, 0), 2)
+
+        if cicular_contours:
+            # Find the largest circular contour by area
+            biggest_circular = max(cicular_contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(biggest_circular)
+            # Crop the region of interest from the original (color) traffic image
+            keras_roi = traffic_image[y:y+h, x:x+w].copy()
+            # Optional: resize for keras model input, e.g. (32, 32)
+            keras_input = cv2.resize(keras_roi, (32, 32))
+            # keras_input is now ready for keras model prediction
+
+            # For debug: show the cropped region
+            cv2.imshow('Biggest Circular ROI', keras_input)
+        else:
+            keras_input = None  # No circular contour found
+
+        # --- Process Traffic Sign Detection ---
+        
+
+        # engine.acceleration = accel_state
+        # engine.steerAngle = deviation_angle_deg / 2
+        # engine.brake = 0
+
+        # await engine.emit_to_simulation(sio, client_id)
+        
         # ------------------------------- MAIN PROCESSING -------------------------------------
 
         # Display the image
-        cv2.imshow('Video Stream', line_image)
+        cv2.imshow('Video Stream', image)
+        cv2.imshow('Traffic_sign', traffic_image)
         
         # Use a short wait time to make it feel like video
         # 1ms is enough to update the UI without blocking too long
