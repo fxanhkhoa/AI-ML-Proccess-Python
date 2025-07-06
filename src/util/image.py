@@ -16,6 +16,9 @@ def is_circular(contour, tolerance=0.2):
     area = cv2.contourArea(contour)
     perimeter = cv2.arcLength(contour, True)
 
+    if area < 200:
+        return False
+
     # If the perimeter is zero, it's not a valid shape
     if perimeter == 0:
         return False
